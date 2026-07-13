@@ -960,6 +960,19 @@
               <span class="iod-pip" class:on={i <= flowPos} class:cur={i === flowPos}></span>
             {/each}
           </div>
+          <div class="iod-flow-title">hops ({trace.edges.length})</div>
+          <ol class="iod-steps">
+            {#each trace.edges as k, i}
+              {@const src = k.split('>')[0]}
+              {@const tgt = k.split('>')[1]}
+              <li class:on={i <= flowPos} class:cur={i === flowPos} class:done={i < flowPos}>
+                <span class="iod-step-n">{i + 1}</span>
+                <span class="iod-step-from">{nodeLabelById(src)}</span>
+                <span class="iod-step-arrow">→</span>
+                <span class="iod-step-to">{nodeLabelById(tgt)}</span>
+              </li>
+            {/each}
+          </ol>
           <div class="iod-flow-title">outputs ({trace.outputs.length})</div>
           <div class="iod-outs">
             {#each trace.outputs as o}
@@ -1087,10 +1100,15 @@
   .iod-pip { width: 10px; height: 6px; border-radius: 3px; background: #1e293b; transition: background .2s; }
   .iod-pip.on { background: #3b82f6; }
   .iod-pip.cur { background: #fbbf24; box-shadow: 0 0 5px #fbbf24; }
-  .iod-steps { list-style: none; margin: 0; padding: 0; counter-reset: step; }
-  .iod-steps li { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 5px; background: #0f172a; border: 1px solid #1e293b; margin-bottom: 4px; font: 12px system-ui; }
-  .iod-steps li.iod-step-out { border-color: #ef4444; background: #1a0c0c; }
+  .iod-steps { list-style: none; margin: 0; padding: 0; counter-reset: step; max-height: 38vh; overflow-y: auto; }
+  .iod-steps li { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 5px; background: #0f172a; border: 1px solid #1e293b; margin-bottom: 4px; font: 12px system-ui; opacity: .45; transition: opacity .2s, border-color .2s; }
+  .iod-steps li.on { opacity: 1; }
+  .iod-steps li.cur { border-color: #fbbf24; background: #1c1505; box-shadow: 0 0 5px rgba(251,191,36,.5); }
+  .iod-steps li.done { opacity: .8; border-color: #1d4ed8; }
   .iod-step-n { background: #1e293b; color: #93c5fd; border-radius: 50%; width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; flex-shrink: 0; }
+  .iod-step-from { color: #cbd5e1; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .iod-step-arrow { color: #64748b; }
+  .iod-step-to { color: #93c5fd; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .iod-step-label { flex: 1; color: #cbd5e1; }
   .iod-step-kind { color: #64748b; font-size: 10px; }
   .iod-outs { display: flex; flex-direction: column; gap: 6px; }
