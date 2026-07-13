@@ -1,0 +1,1 @@
+This is a Project that will be able to take multiple different codebase structures and transform into easy to digest diagrams that are able to show the structure of the codebase, the data flow and so on.

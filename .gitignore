@@ -1,0 +1,6 @@
+node_modules
+.astro
+dist
+graph.json
+*.log
+.DS_Store

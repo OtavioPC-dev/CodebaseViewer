@@ -1,0 +1,25 @@
+{
+  "name": "codebaseviewer",
+  "type": "module",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "analyze": "node server/analyze.mjs"
+  },
+  "dependencies": {
+    "@astrojs/node": "^11.0.2",
+    "@astrojs/svelte": "^9.0.1",
+    "astro": "^7.0.7",
+    "d3": "^7.9.0",
+    "svelte": "^5.56.4",
+    "tree-sitter": "^0.25.0",
+    "tree-sitter-c": "^0.23.6",
+    "tree-sitter-cpp": "^0.23.4",
+    "tree-sitter-javascript": "^0.25.0",
+    "tree-sitter-python": "^0.25.0",
+    "tree-sitter-typescript": "^0.23.2"
+  }
+}
