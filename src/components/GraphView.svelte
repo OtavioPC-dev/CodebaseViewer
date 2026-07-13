@@ -121,6 +121,14 @@
     const file = node?.file || (node?.kind === 'file' ? node.id : null);
     return file ? { file, line: node.line, col: node.col } : null;
   }
+  // Build the per-entry list for an IO node's right drawer.
+  function ioEntries(node: any) {
+    if (!node || !node.kind?.startsWith('io-')) return [];
+    if (node.aggregate && node.samples) {
+      return node.samples.map((s: string, i: number) => ({ snippet: s, line: node.lines?.[i] ?? null, file: node.file }));
+    }
+    return [{ snippet: node.payload || node.label, line: node.line ?? null, file: node.file }];
+  }
   function openClicked(node: any, ev: MouseEvent) {
     openError = ''; openNote = '';
     openMenu = { node, x: ev.clientX, y: ev.clientY };
@@ -822,6 +830,28 @@
       {#if openNote}<div class="om-ok">✓ {openNote}</div>{/if}
     </div>
   {/if}
+
+  {#if selected && selected.kind && selected.kind.startsWith('io-')}
+    <aside class="iodrawer">
+      <div class="iod-head">
+        <span class="iod-kind" style="color:{selected.dir === 'in' ? '#22c55e' : '#ef4444'}">{selected.dir === 'in' ? 'IN' : 'OUT'}</span>
+        <strong>{selected.label}</strong>
+        {#if selected.dataType}<span class="iod-type">{selected.dataType}</span>{/if}
+        {#if selected.aggregate}<span class="iod-count">×{selected.count}</span>{/if}
+        <button type="button" class="iod-close" onclick={() => (selected = null)} aria-label="close">×</button>
+      </div>
+      <div class="iod-sub">used by {selected.owner}</div>
+      <div class="iod-list">
+        {#each ioEntries(selected) as e, i}
+          <button type="button" class="iod-row" onclick={() => requestOpen('code', { file: e.file, line: e.line })} title="open at line {e.line}">
+            <span class="iod-snippet">{e.snippet}</span>
+            {#if e.line}<span class="iod-line">:{e.line}</span>{/if}
+          </button>
+        {/each}
+        {#if ioEntries(selected).length === 0}<div class="iod-empty">no captured snippet</div>{/if}
+      </div>
+    </aside>
+  {/if}
 </div>
 
 <style>
@@ -885,6 +915,30 @@
     border-radius: 5px; padding: 6px 9px; cursor: pointer; font: 13px system-ui;
     margin-bottom: 5px; text-align: left;
   }
+  .iodrawer {
+    position: absolute; top: 46px; right: 0; bottom: 0; z-index: 4;
+    width: 320px; background: rgba(15,23,42,.96); border-left: 1px solid #334155;
+    display: flex; flex-direction: column; font: 13px system-ui, sans-serif; color: #e2e8f0;
+    box-shadow: -8px 0 24px rgba(0,0,0,.4);
+  }
+  .iod-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px 4px; }
+  .iod-head strong { font-size: 14px; }
+  .iod-kind { font-weight: 700; font-size: 11px; letter-spacing: .5px; }
+  .iod-type { background: #1e293b; border: 1px solid #334155; border-radius: 4px; padding: 1px 6px; font-size: 11px; color: #93c5fd; }
+  .iod-count { color: #fbbf24; font-size: 12px; }
+  .iod-close { margin-left: auto; background: none; border: none; color: #94a3b8; font-size: 18px; cursor: pointer; line-height: 1; }
+  .iod-close:hover { color: #e2e8f0; }
+  .iod-sub { padding: 0 14px 8px; color: #94a3b8; font-size: 11px; border-bottom: 1px solid #1e293b; }
+  .iod-list { overflow-y: auto; padding: 8px; flex: 1; }
+  .iod-row {
+    display: flex; gap: 8px; width: 100%; text-align: left; cursor: pointer;
+    background: #0f172a; border: 1px solid #1e293b; border-radius: 6px;
+    padding: 8px 10px; margin-bottom: 6px; color: #cbd5e1; font: 12px ui-monospace, monospace;
+  }
+  .iod-row:hover { border-color: #3b82f6; background: #111c33; }
+  .iod-snippet { flex: 1; word-break: break-all; white-space: pre-wrap; }
+  .iod-line { color: #fbbf24; flex-shrink: 0; }
+  .iod-empty { color: #64748b; padding: 12px; text-align: center; }
   .openmenu button:hover:not(:disabled) { background: #2563eb; border-color: #3b82f6; }
   .openmenu button:disabled { opacity: .5; cursor: default; }
   .openmenu .om-hint { color: #64748b; font-size: 10px; margin-left: auto; }
