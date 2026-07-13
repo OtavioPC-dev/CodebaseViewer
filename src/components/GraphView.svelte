@@ -170,6 +170,12 @@
     const bridges: string[] = [];
     const visited = new Set<string>([owner]);
     const queue: string[] = [owner];
+    // Seed the owner's FILE too: finer-grained function ownership means an input
+    // consumed by one function in a file can feed sibling functions or module-level
+    // code in that same file (which may own the real output). Traversal stays
+    // downstream (callees) to avoid climbing the whole caller tree.
+    const fileId = owner.includes('::') ? owner.split('::')[0] : owner;
+    if (fileId !== owner && !visited.has(fileId)) { visited.add(fileId); queue.push(fileId); }
     // Seed a cross-file network hop if this input targets an API route.
     const routeFile = ioNode ? routeFileForRequest(ioNode) : null;
     if (routeFile && !visited.has(routeFile)) {
@@ -186,7 +192,6 @@
         if (visited.has(next)) continue;
         visited.add(next);
         edges.push(cur + '>' + next);
-        // expand further only if this callee might call more (has no own output yet)
         const ownsOut = liveGraph.nodes.some((n: any) => n.kind === 'io-output' && n.owner === next);
         if (!ownsOut) queue.push(next);
       }

@@ -141,15 +141,17 @@ export async function analyze(repoPath, hooks = {}) {
   };
   for (const e of edges) {
     if (e.kind !== 'imports' || !e.spec) continue;
+    const fromFile = e.source;   // the file that declares the import
     const isRelative = e.spec.startsWith('.') || e.spec.startsWith('/');
-    let targetFile = isRelative ? resolveRelative(e.source, e.spec) : null;
-    if (targetFile && targetFile !== e.source) {
-      e.target = targetFile; e.resolvedImport = true;
+    let targetFile = isRelative ? resolveRelative(fromFile, e.spec) : null;
+    if (targetFile && targetFile !== fromFile) {
+      // Direction = data flow: the imported module flows INTO the importing file.
+      e.source = targetFile; e.target = fromFile; e.resolvedImport = true;
     } else {
       // C/C++ system includes (#include <foo.h>) and JS bare specs both map to external
       const label = e.spec.startsWith('@') ? e.spec.split('/').slice(0, 2).join('/')
         : (e.spec.startsWith('<') ? e.spec.replace(/[<>]/g, '') : e.spec.split('/')[0]);
-      if (!label || label === '.' || label === '..') { e.target = e.source; e.resolvedImport = true; continue; }
+      if (!label || label === '.' || label === '..') { e.target = fromFile; e.resolvedImport = true; delete e.spec; continue; }
       const extId = `external::${label}`;
       if (!nodes.some(n => n.id === extId)) {
         const ver = label.startsWith('node:') ? null : libVersion(label, abs, pkgDeps);
@@ -157,7 +159,8 @@ export async function analyze(repoPath, hooks = {}) {
         const slug = logoSlug(label, null);
         nodes.push({ id: extId, kind: 'external', label, version: ver || null, display: extLabel, logo: slug || undefined });
       }
-      e.target = extId; e.resolvedImport = false;
+      // dependency -> file
+      e.source = extId; e.target = fromFile; e.resolvedImport = false;
     }
     delete e.spec;
   }

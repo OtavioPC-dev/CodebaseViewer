@@ -245,7 +245,10 @@ function emitBoundary(file, ownerId, full, arg0, nodes, edges, lang, line, callN
     nodes.push({ id, kind, label, file, surface: c.surface, dir: c.dir, owner: ownerId,
       count: 1, dataType: c.dataType, sensitive: c.sensitive, aggregate: true, _base: label,
       samples: c.detail ? [c.detail] : [], lines: c.detail ? [line || null] : [] });
-    edges.push({ source: ownerId, target: id, kind: c.dir === 'in' ? 'io-in' : 'io-out', surface: c.surface });
+    // Direction = data flow: io-in flows FROM the input node INTO the owner;
+    // io-out flows FROM the owner INTO the output node.
+    if (c.dir === 'in') edges.push({ source: id, target: ownerId, kind: 'io-in', surface: c.surface });
+    else edges.push({ source: ownerId, target: id, kind: 'io-out', surface: c.surface });
     return;
   }
   // Data surfaces: distinct payloads stay separate.
@@ -264,7 +267,8 @@ function emitBoundary(file, ownerId, full, arg0, nodes, edges, lang, line, callN
     count: 1, payload: c.detail, dataType: c.dataType, sensitive: c.sensitive,
     _base: label, line: line || null,
   });
-  edges.push({ source: ownerId, target: id, kind: c.dir === 'in' ? 'io-in' : 'io-out', surface: c.surface });
+  if (c.dir === 'in') edges.push({ source: id, target: ownerId, kind: 'io-in', surface: c.surface });
+  else edges.push({ source: ownerId, target: id, kind: 'io-out', surface: c.surface });
 }
 
 // ---- JS / TS / TSX ----
