@@ -688,10 +688,19 @@
   }
 
   function forceEdge(e: any) {
-    const sp = positions[typeof e.source === 'object' ? e.source.id : e.source];
-    const tp = positions[typeof e.target === 'object' ? e.target.id : e.target];
+    const sid = typeof e.source === 'object' ? e.source.id : e.source;
+    const tid = typeof e.target === 'object' ? e.target.id : e.target;
+    const sp = positions[sid];
+    const tp = positions[tid];
     if (!sp || !tp) return null;
-    return { x1: sp.x, y1: sp.y, x2: tp.x, y2: tp.y };
+    // Inset the target endpoint by the target node's radius (+ arrowhead) so the
+    // arrowhead lands at the node's edge instead of hidden under it.
+    const tkind = view.kindById?.get(tid);
+    const inset = (tkind && tkind.startsWith('io-')) ? 16 : radiusFor(tkind || '') + 7;
+    const dx = tp.x - sp.x, dy = tp.y - sp.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len, uy = dy / len;
+    return { x1: sp.x, y1: sp.y, x2: tp.x - ux * inset, y2: tp.y - uy * inset };
   }
 
   function edgeActive(e: any) {
@@ -845,6 +854,21 @@
       <marker id="bridgehead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
         <path d="M0,0 L10,5 L0,10 z" fill="#f472b6" />
       </marker>
+      <marker id="ah-calls" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#3b82f6" />
+      </marker>
+      <marker id="ah-imports" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#f59e0b" />
+      </marker>
+      <marker id="ah-io-in" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#22c55e" />
+      </marker>
+      <marker id="ah-io-out" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#ef4444" />
+      </marker>
+      <marker id="ah-structure" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#4b5563" />
+      </marker>
     </defs>
     <g transform={transformStr}>
       {#if trace && trace.bridges}
@@ -866,6 +890,7 @@
           {#if g && present(e.source) && present(e.target)}
             <line x1={g.x1} y1={g.y1} x2={g.x2} y2={g.y2} stroke={edgeColor[e.kind] || '#555'} stroke-width={hovered && edgeActive(e) ? 2.5 : 1}
                   stroke-dasharray={e.kind === 'structure' ? '3,3' : null} class:dim={hovered && !edgeActive(e)} class:hl={hovered && edgeActive(e)}
+                  marker-end="url(#ah-{e.kind})"
                   class:intrace={edgeActiveFn(e)} class:cur-edge={curEdge === e.source + '>' + e.target} />
           {/if}
         {/each}

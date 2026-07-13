@@ -296,8 +296,12 @@ function analyzeJS(src, lang, file, defs, edges, nodes) {
       defs.push({ id: defId, name: defName, kind, file, lang });
       nodes.push({ id: defId, kind, label: defName, file, lang, line: node.startPosition.row + 1, col: node.startPosition.column + 1 });
       edges.push({ source: file, target: defId, kind: 'structure' });
-      scopeStack = [...scopeStack, { name: defName, kind }];
+      scopeStack = [...scopeStack, { name: defName, kind, id: defId }];
     }
+    // Nearest enclosing function/method owns any IO/calls emitted in this subtree,
+    // so IO nodes connect to the function that consumes/produces them, not the file.
+    const enclosing = [...scopeStack].reverse().find((s) => s.kind === 'function' || s.kind === 'method');
+    const ownerId = enclosing ? enclosing.id : file;
     if (node.type === 'import_statement' || node.type === 'export_statement') {
       const strChild = node.namedChildren.find(c => c.type === 'string');
       if (strChild) edges.push({ source: file, kind: 'imports', spec: strChild.text.replace(/['"]/g, '') });
@@ -310,17 +314,17 @@ function analyzeJS(src, lang, file, defs, edges, nodes) {
           if (arg) edges.push({ source: file, kind: 'imports', spec: arg.text.replace(/['"]/g, '') });
         }
         const name = full.split('(')[0].split('.').pop().split('[')[0];
-        if (name && /^[A-Za-z_]\w*$/.test(name)) edges.push({ source: defId || file, target: name, kind: 'calls', raw: full });
+        if (name && /^[A-Za-z_]\w*$/.test(name)) edges.push({ source: ownerId, target: name, kind: 'calls', raw: full });
         const args = node.childForFieldName('arguments');
-        emitBoundary(file, defId || file, full, args?.namedChildren?.[0]?.text, nodes, edges, lang, node.startPosition.row + 1, node);
+        emitBoundary(file, ownerId, full, args?.namedChildren?.[0]?.text, nodes, edges, lang, node.startPosition.row + 1, node);
       }
     } else if (node.type === 'new_expression') {
       const callee = node.childForFieldName('constructor');
       if (callee) {
         const name = callee.text.split('(')[0].split('.').pop();
-        if (name && /^[A-Za-z_]\w*$/.test(name)) edges.push({ source: defId || file, target: name, kind: 'calls', raw: callee.text });
+        if (name && /^[A-Za-z_]\w*$/.test(name)) edges.push({ source: ownerId, target: name, kind: 'calls', raw: callee.text });
         const args = node.childForFieldName('arguments');
-        emitBoundary(file, defId || file, callee.text, args?.namedChildren?.[0]?.text, nodes, edges, lang, node.startPosition.row + 1, node);
+        emitBoundary(file, ownerId, callee.text, args?.namedChildren?.[0]?.text, nodes, edges, lang, node.startPosition.row + 1, node);
       }
     }
     for (let i = 0; i < node.childCount; i++) visit(node.child(i), scopeStack);
@@ -347,8 +351,10 @@ function analyzePY(src, file, defs, edges, nodes) {
       defs.push({ id: defId, name: defName, kind, file, lang: 'python' });
       nodes.push({ id: defId, kind, label: defName, file, lang: 'python', line: node.startPosition.row + 1, col: node.startPosition.column + 1 });
       edges.push({ source: file, target: defId, kind: 'structure' });
-      scopeStack = [...scopeStack, { name: defName, kind }];
+      scopeStack = [...scopeStack, { name: defName, kind, id: defId }];
     }
+    const enclosing = [...scopeStack].reverse().find((s) => s.kind === 'function' || s.kind === 'method');
+    const ownerId = enclosing ? enclosing.id : file;
     if (node.type === 'import_statement' || node.type === 'import_from_statement') {
       const modChild = node.namedChildren.find(c => c.type === 'dotted_name' || c.type === 'module' || c.type === 'relative_import');
       const spec = (modChild ? modChild.text : node.text).split(/\s/)[0].replace(/['"]/g, '');
@@ -357,8 +363,8 @@ function analyzePY(src, file, defs, edges, nodes) {
       const fn = node.childForFieldName('function');
       if (fn) {
         const name = fn.text.split('(')[0].split('.').pop().split('[')[0];
-        if (name && /^[A-Za-z_]\w*$/.test(name)) edges.push({ source: defId || file, target: name, kind: 'calls', raw: fn.text });
-        emitBoundary(file, defId || file, fn.text, node.childForFieldName('arguments')?.namedChildren?.[0]?.text, nodes, edges, 'py', node.startPosition.row + 1, node);
+        if (name && /^[A-Za-z_]\w*$/.test(name)) edges.push({ source: ownerId, target: name, kind: 'calls', raw: fn.text });
+        emitBoundary(file, ownerId, fn.text, node.childForFieldName('arguments')?.namedChildren?.[0]?.text, nodes, edges, 'py', node.startPosition.row + 1, node);
       }
     }
     for (let i = 0; i < node.childCount; i++) visit(node.child(i), scopeStack);
@@ -407,9 +413,11 @@ function analyzeCPP(src, lang, file, defs, edges, nodes) {
       defs.push({ id: defId, name: defName, kind, file, lang });
       nodes.push({ id: defId, kind, label: defName, file, lang, line: node.startPosition.row + 1, col: node.startPosition.column + 1 });
       edges.push({ source: file, target: defId, kind: 'structure' });
-      if (kind === 'class' || kind === 'namespace') scopeStack = [...scopeStack, { name: defName, kind }];
-      else if (kind === 'method') scopeStack = [...scopeStack, { name: defName, kind }];
+      if (kind === 'class' || kind === 'namespace') scopeStack = [...scopeStack, { name: defName, kind, id: defId }];
+      else if (kind === 'method' || kind === 'function') scopeStack = [...scopeStack, { name: defName, kind, id: defId }];
     }
+    const enclosing = [...scopeStack].reverse().find((s) => s.kind === 'function' || s.kind === 'method');
+    const ownerId = enclosing ? enclosing.id : file;
     if (node.type === 'preproc_include') {
       const str = node.namedChildren.find(c => c.type === 'string' || c.type === 'system_lib_string');
       if (str) {
@@ -422,14 +430,14 @@ function analyzeCPP(src, lang, file, defs, edges, nodes) {
       if (callee) {
         const full = callee.text;
         const name = full.split('(')[0].split('::').pop().split('.').pop().split('[')[0];
-        if (name && /^[A-Za-z_]\w*$/.test(name)) edges.push({ source: defId || file, target: name, kind: 'calls', raw: full });
-        emitBoundary(file, defId || file, full, node.childForFieldName('arguments')?.namedChildren?.[0]?.text, nodes, edges, lang, node.startPosition.row + 1, node);
+        if (name && /^[A-Za-z_]\w*$/.test(name)) edges.push({ source: ownerId, target: name, kind: 'calls', raw: full });
+        emitBoundary(file, ownerId, full, node.childForFieldName('arguments')?.namedChildren?.[0]?.text, nodes, edges, lang, node.startPosition.row + 1, node);
       }
     } else if (node.type === 'new_expression') {
       const callee = node.childForFieldName('type');
       if (callee) {
         const name = callee.text.split('(')[0].split('::').pop().split('<')[0].trim();
-        if (name && /^[A-Za-z_]\w*$/.test(name)) edges.push({ source: defId || file, target: name, kind: 'calls', raw: callee.text });
+        if (name && /^[A-Za-z_]\w*$/.test(name)) edges.push({ source: ownerId, target: name, kind: 'calls', raw: callee.text });
       }
     }
     for (let i = 0; i < node.childCount; i++) visit(node.child(i), scopeStack);
