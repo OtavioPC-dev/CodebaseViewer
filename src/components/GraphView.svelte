@@ -129,6 +129,97 @@
     }
     return [{ snippet: node.payload || node.label, line: node.line ?? null, file: node.file }];
   }
+
+  // ---- static data-flow tracer: animate a "data token" along call edges ----
+  let trace: any = $state(null);          // active trace or null
+  const FLOW_CAP = 12;                    // stop a path after this many hops
+  let flowMode: 'single' | 'all' = $state('single');
+  let flowPaused = $state(false);
+  let flowPos = $state(-1);               // current edge index in trace.edges
+  let flowTimer: any = null;
+
+  function nodeLabelById(id: string) {
+    const n = liveGraph.nodes.find((x: any) => x.id === id);
+    return n ? (n.label || n.id) : id;
+  }
+  function outCalls(id: string): string[] {
+    const ids = new Set(liveGraph.nodes.map((n: any) => n.id));
+    return liveGraph.edges
+      .filter((e: any) => e.kind === 'calls' && e.source === id && ids.has(e.target))
+      .map((e: any) => e.target);
+  }
+  // Walk the data flow: from the IO owner, follow ALL `calls` edges (file-scoped),
+  // and collect every reachable function plus the outputs they own. Stop at a
+  // depth limit (FLOW_CAP) or when a branch hits an output-owning node.
+  function buildPaths(owner: string): { edges: string[]; outputs: any[] } {
+    const edges: string[] = [];
+    const visited = new Set<string>([owner]);
+    const queue: string[] = [owner];
+    let depth = 0;
+    while (queue.length && depth < FLOW_CAP) {
+      const cur = queue.shift()!;
+      for (const next of outCalls(cur)) {
+        if (visited.has(next)) continue;
+        visited.add(next);
+        edges.push(cur + '>' + next);
+        // expand further only if this callee might call more (has no own output yet)
+        const ownsOut = liveGraph.nodes.some((n: any) => n.kind === 'io-output' && n.owner === next);
+        if (!ownsOut) queue.push(next);
+      }
+      depth++;
+    }
+    const outputs = liveGraph.nodes
+      .filter((n: any) => n.kind === 'io-output' && visited.has(n.owner))
+      .map((o: any) => ({ label: o.label, file: o.file, line: o.line, surface: o.surface, owner: o.owner }));
+    return { edges, outputs };
+  }
+  function runTrace(ioNode: any) {
+    const owner = ioNode.owner || ioNode.id;
+    const { edges, outputs } = buildPaths(owner);
+    const intrace = new Set<string>();
+    intrace.add(owner);
+    edges.forEach((k) => { const [s] = k.split('>'); intrace.add(s); intrace.add(k.split('>')[1]); });
+    trace = { input: { id: ioNode.id, label: ioNode.label }, order: intrace, edges, outputs, owner, mode: flowMode };
+    flowPos = -1;
+    flowPaused = false;
+    startFlow();
+  }
+  function startFlow() {
+    if (flowTimer) clearInterval(flowTimer);
+    if (trace && trace.edges.length && !flowPaused) {
+      flowTimer = setInterval(() => {
+        if (flowPaused) return;
+        if (flowPos >= trace.edges.length - (flowMode === 'single' ? 1 : 0) && flowMode === 'single') {
+          // single: advance one edge per tick; loop back to start when done
+          flowPos = (flowPos + 1) % trace.edges.length;
+        } else if (flowMode === 'all') {
+          if (flowPos < trace.edges.length - 1) flowPos++;
+          else if (flowPos >= trace.edges.length - 1) flowPos = trace.edges.length - 1;
+        } else {
+          flowPos++;
+        }
+      }, 600);
+    }
+  }
+  function toggleFlowMode() {
+    flowMode = flowMode === 'single' ? 'all' : 'single';
+    if (trace) { trace = { ...trace, mode: flowMode }; startFlow(); }
+  }
+  function togglePause() { flowPaused = !flowPaused; }
+  function clearTrace() {
+    if (flowTimer) clearInterval(flowTimer);
+    flowTimer = null; flowPos = -1; trace = null;
+  }
+  // which single edge is currently "lit" by the flowing token
+  const curEdge = $derived(trace && flowPos >= 0 ? trace.edges[flowPos] : null);
+  // an edge is part of the active trace trail
+  function edgeActiveFn(e: any) {
+    if (!trace) return false;
+    const key = e.source + '>' + e.target;
+    if (!trace.edges.includes(key)) return false;
+    const idx = trace.edges.indexOf(key);
+    return flowMode === 'all' ? true : idx <= flowPos;
+  }
   function openClicked(node: any, ev: MouseEvent) {
     openError = ''; openNote = '';
     openMenu = { node, x: ev.clientX, y: ev.clientY };
@@ -137,7 +228,10 @@
   // left click: select only (inspect panel). right click: open host menu.
   function nodeClick(node: any, ev: MouseEvent) {
     if (downPos?.moved) return;           // it was a drag, not a click
+    ev.stopPropagation();                  // don't let it bubble to the SVG background
     selected = node;                       // keep inspect panel in sync
+    if (node.kind === 'io-input') runTrace(node);   // start the data-flow animation
+    else if (trace) clearTrace();          // clicking elsewhere dismisses the trace overlay
   }
   function nodeRightClick(node: any, ev: MouseEvent) {
     ev.preventDefault();
@@ -185,6 +279,8 @@
     if (!k || !k.startsWith('io-')) return true;
     // IO: if the user explicitly enabled the IO filter, always show.
     if (kindFilters.io) return true;
+    // During an active trace, reveal all IO (inputs + reached outputs).
+    if (trace) return true;
     const f = hovered || (selected ? selected.id : null);
     if (!f) return false;
     const nb = view.neighbors.get(f);
@@ -675,15 +771,16 @@
     </div>
   {/if}
 
-  <svg bind:this={svgEl} class="graph" viewBox="0 0 {vw} {vh}" preserveAspectRatio="xMidYMid meet"
-       onpointermove={onMove} onpointerup={onUp} onpointerleave={onUp}>
+  <svg bind:this={svgEl} class="graph" class:tracing={!!trace} viewBox="0 0 {vw} {vh}" preserveAspectRatio="xMidYMid meet"
+       onpointermove={onMove} onpointerup={onUp} onpointerleave={onUp} onclick={() => { if (trace) clearTrace(); }}>
     <g transform={transformStr}>
       {#if view.mode === 'force'}
         {#each view.renderEdges as e}
           {@const g = forceEdge(e)}
           {#if g && present(e.source) && present(e.target)}
             <line x1={g.x1} y1={g.y1} x2={g.x2} y2={g.y2} stroke={edgeColor[e.kind] || '#555'} stroke-width={hovered && edgeActive(e) ? 2.5 : 1}
-                  stroke-dasharray={e.kind === 'structure' ? '3,3' : null} class:dim={hovered && !edgeActive(e)} class:hl={hovered && edgeActive(e)} />
+                  stroke-dasharray={e.kind === 'structure' ? '3,3' : null} class:dim={hovered && !edgeActive(e)} class:hl={hovered && edgeActive(e)}
+                  class:intrace={edgeActiveFn(e)} class:cur-edge={curEdge === e.source + '>' + e.target} />
           {/if}
         {/each}
         {#each view.simNodes as n}
@@ -692,6 +789,7 @@
             {#if n.kind.startsWith('io-')}
               <g class="io {n.dir}" class:dim={hovered && !nodeActive(n.id)} class:hl={hovered === n.id}
                  role="button" tabindex="0" style="cursor:grab{!present(n.id) ? ';display:none' : ''}"
+                 class:intrace={trace && trace.order.has(n.id)} class:cur-node={curEdge && (curEdge.startsWith(n.id + '>') || curEdge.endsWith('>' + n.id))}
                  onpointerdown={(ev) => onDown(ev, n.id)}
                  onclick={(ev) => nodeClick(n, ev)}
                  oncontextmenu={(ev) => nodeRightClick(n, ev)}
@@ -707,6 +805,7 @@
               <circle cx={p.x} cy={p.y} r={radiusFor(n.kind)} fill={kindColor[n.kind] || '#fff'} stroke="#111" stroke-width="1"
                     role="button" tabindex="0" style="cursor:grab{!present(n.id) ? ';display:none' : ''}"
                     class:dim={hovered && !nodeActive(n.id)} class:hl={hovered === n.id}
+                    class:intrace={trace && trace.order.has(n.id)} class:cur-node={curEdge && (curEdge.startsWith(n.id + '>') || curEdge.endsWith('>' + n.id))}
                     onpointerdown={(ev) => onDown(ev, n.id)}
                     onclick={(ev) => nodeClick(n, ev)}
                     oncontextmenu={(ev) => nodeRightClick(n, ev)}
@@ -729,15 +828,19 @@
           {@const w = wirePath(e)}
           {#if w && present(e.source) && present(e.target)}
             <path d={w.d} fill="none" stroke={edgeColor[e.kind] || '#555'} stroke-width={hovered && edgeActive(e) ? 3 : 1.5}
-                  stroke-dasharray={e.kind === 'structure' ? '4,3' : null} class:dim={hovered && !edgeActive(e)} class:hl={hovered && edgeActive(e)} />
-            <circle cx={w.a.x} cy={w.a.y} r={hovered && edgeActive(e) ? 4 : 2.5} fill={edgeColor[e.kind] || '#555'} class:dim={hovered && !edgeActive(e)} class:hl={hovered && edgeActive(e)} />
-            <circle cx={w.b.x} cy={w.b.y} r={hovered && edgeActive(e) ? 4 : 2.5} fill={edgeColor[e.kind] || '#555'} class:dim={hovered && !edgeActive(e)} class:hl={hovered && edgeActive(e)} />
+                  stroke-dasharray={e.kind === 'structure' ? '4,3' : null} class:dim={hovered && !edgeActive(e)} class:hl={hovered && edgeActive(e)}
+                  class:intrace={edgeActiveFn(e)} class:cur-edge={curEdge === e.source + '>' + e.target} />
+            <circle cx={w.a.x} cy={w.a.y} r={hovered && edgeActive(e) ? 4 : 2.5} fill={edgeColor[e.kind] || '#555'} class:dim={hovered && !edgeActive(e)} class:hl={hovered && edgeActive(e)}
+                  class:intrace={edgeActiveFn(e)} class:cur-edge={curEdge === e.source + '>' + e.target} />
+            <circle cx={w.b.x} cy={w.b.y} r={hovered && edgeActive(e) ? 4 : 2.5} fill={edgeColor[e.kind] || '#555'} class:dim={hovered && !edgeActive(e)} class:hl={hovered && edgeActive(e)}
+                  class:intrace={edgeActiveFn(e)} class:cur-edge={curEdge === e.source + '>' + e.target} />
           {/if}
         {/each}
         {#each view.boxes as b}
           {@const p = positions[b.id]}
           {#if p}
             <g class="uml {b.kind}" class:dim={hovered && !nodeActive(b.id)} class:hl={hovered === b.id}
+               class:intrace={trace && trace.order.has(b.id)} class:cur-node={curEdge && (curEdge.startsWith(b.id + '>') || curEdge.endsWith('>' + b.id))}
                role="button" tabindex="0" style="cursor:grab{!present(b.entity.id) ? ';display:none' : ''}"
                onpointerdown={(ev) => onDown(ev, b.id)}
                onclick={(ev) => nodeClick(b.entity, ev)}
@@ -775,6 +878,7 @@
             {#if n.kind.startsWith('io-')}
               <g class="io {n.dir}" class:dim={hovered && !nodeActive(n.id)} class:hl={hovered === n.id}
                  role="button" tabindex="0" style="cursor:grab{!present(n.id) ? ';display:none' : ''}"
+                 class:intrace={trace && trace.order.has(n.id)} class:cur-node={curEdge && (curEdge.startsWith(n.id + '>') || curEdge.endsWith('>' + n.id))}
                  onpointerdown={(ev) => onDown(ev, n.id)}
                  onclick={(ev) => nodeClick(n, ev)}
                  oncontextmenu={(ev) => nodeRightClick(n, ev)}
@@ -790,6 +894,7 @@
               <circle cx={p.x} cy={p.y} r={radiusFor(n.kind)} fill={kindColor[n.kind] || '#fff'} stroke="#111" stroke-width="1"
                     role="button" tabindex="0" style="cursor:grab{!present(n.id) ? ';display:none' : ''}"
                     class:dim={hovered && !nodeActive(n.id)} class:hl={hovered === n.id}
+                    class:intrace={trace && trace.order.has(n.id)} class:cur-node={curEdge && (curEdge.startsWith(n.id + '>') || curEdge.endsWith('>' + n.id))}
                     onpointerdown={(ev) => onDown(ev, n.id)}
                     onclick={(ev) => nodeClick(n, ev)}
                     oncontextmenu={(ev) => nodeRightClick(n, ev)}
@@ -838,18 +943,45 @@
         <strong>{selected.label}</strong>
         {#if selected.dataType}<span class="iod-type">{selected.dataType}</span>{/if}
         {#if selected.aggregate}<span class="iod-count">×{selected.count}</span>{/if}
-        <button type="button" class="iod-close" onclick={() => (selected = null)} aria-label="close">×</button>
+        <button type="button" class="iod-close" onclick={() => { selected = null; clearTrace(); }} aria-label="close">×</button>
       </div>
       <div class="iod-sub">used by {selected.owner}</div>
-      <div class="iod-list">
-        {#each ioEntries(selected) as e, i}
-          <button type="button" class="iod-row" onclick={() => requestOpen('code', { file: e.file, line: e.line })} title="open at line {e.line}">
-            <span class="iod-snippet">{e.snippet}</span>
-            {#if e.line}<span class="iod-line">:{e.line}</span>{/if}
-          </button>
-        {/each}
-        {#if ioEntries(selected).length === 0}<div class="iod-empty">no captured snippet</div>{/if}
-      </div>
+
+      {#if trace && trace.input.id === selected.id}
+        <div class="iod-flow">
+          <div class="iod-flow-title">data flow · {trace.edges.length} hops · {flowMode === 'single' ? 'one path' : 'entire path'}</div>
+          <div class="iod-ctrls">
+            <button type="button" class="iod-ctrl" onclick={toggleFlowMode}>{flowMode === 'single' ? 'show entire path' : 'one at a time'}</button>
+            <button type="button" class="iod-ctrl" onclick={togglePause}>{flowPaused ? 'play' : 'pause'}</button>
+            <button type="button" class="iod-ctrl" onclick={clearTrace}>stop</button>
+          </div>
+          <div class="iod-progress">
+            {#each trace.edges as _, i}
+              <span class="iod-pip" class:on={i <= flowPos} class:cur={i === flowPos}></span>
+            {/each}
+          </div>
+          <div class="iod-flow-title">outputs ({trace.outputs.length})</div>
+          <div class="iod-outs">
+            {#each trace.outputs as o}
+              <button type="button" class="iod-row" onclick={() => requestOpen('code', { file: o.file, line: o.line })} title="open at line {o.line}">
+                <span class="iod-snippet">{o.label}</span>
+                {#if o.line}<span class="iod-line">:{o.line}</span>{/if}
+              </button>
+            {/each}
+            {#if trace.outputs.length === 0}<div class="iod-empty">no output node reached</div>{/if}
+          </div>
+        </div>
+      {:else}
+        <div class="iod-list">
+          {#each ioEntries(selected) as e, i}
+            <button type="button" class="iod-row" onclick={() => requestOpen('code', { file: e.file, line: e.line })} title="open at line {e.line}">
+              <span class="iod-snippet">{e.snippet}</span>
+              {#if e.line}<span class="iod-line">:{e.line}</span>{/if}
+            </button>
+          {/each}
+          {#if ioEntries(selected).length === 0}<div class="iod-empty">no captured snippet</div>{/if}
+        </div>
+      {/if}
     </aside>
   {/if}
 </div>
@@ -939,6 +1071,40 @@
   .iod-snippet { flex: 1; word-break: break-all; white-space: pre-wrap; }
   .iod-line { color: #fbbf24; flex-shrink: 0; }
   .iod-empty { color: #64748b; padding: 12px; text-align: center; }
+  .iod-trace-box { padding: 10px 14px; border-bottom: 1px solid #1e293b; display: flex; flex-direction: column; gap: 6px; }
+  .iod-trace-label { font-size: 10px; color: #94a3b8; text-transform: uppercase; letter-spacing: .4px; }
+  .iod-input { background: #0b1020; border: 1px solid #334155; border-radius: 5px; padding: 6px 8px; color: #e2e8f0; font: 13px system-ui; }
+  .iod-input:focus { outline: none; border-color: #3b82f6; }
+  .iod-trace-btn { background: #2563eb; color: #fff; border: none; border-radius: 5px; padding: 7px 10px; cursor: pointer; font: 13px system-ui; }
+  .iod-trace-btn:hover { background: #1d4ed8; }
+  .iod-clear { background: #1e293b; color: #94a3b8; border: 1px solid #334155; border-radius: 5px; padding: 4px 8px; cursor: pointer; font: 12px system-ui; align-self: flex-end; }
+  .iod-flow { overflow-y: auto; flex: 1; padding: 8px 12px; }
+  .iod-flow-title { color: #93c5fd; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .4px; margin: 10px 0 6px; }
+  .iod-ctrls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .iod-ctrl { background: #1e293b; color: #cbd5e1; border: 1px solid #334155; border-radius: 5px; padding: 6px 9px; cursor: pointer; font: 12px system-ui; }
+  .iod-ctrl:hover { background: #2563eb; border-color: #3b82f6; color: #fff; }
+  .iod-progress { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 6px; }
+  .iod-pip { width: 10px; height: 6px; border-radius: 3px; background: #1e293b; transition: background .2s; }
+  .iod-pip.on { background: #3b82f6; }
+  .iod-pip.cur { background: #fbbf24; box-shadow: 0 0 5px #fbbf24; }
+  .iod-steps { list-style: none; margin: 0; padding: 0; counter-reset: step; }
+  .iod-steps li { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 5px; background: #0f172a; border: 1px solid #1e293b; margin-bottom: 4px; font: 12px system-ui; }
+  .iod-steps li.iod-step-out { border-color: #ef4444; background: #1a0c0c; }
+  .iod-step-n { background: #1e293b; color: #93c5fd; border-radius: 50%; width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; flex-shrink: 0; }
+  .iod-step-label { flex: 1; color: #cbd5e1; }
+  .iod-step-kind { color: #64748b; font-size: 10px; }
+  .iod-outs { display: flex; flex-direction: column; gap: 6px; }
+  /* data-flow trace: dim everything not on the trace path */
+  .graph.tracing .io.intrace, .graph.tracing circle.intrace, .graph.tracing g.intrace { opacity: 1; }
+  .graph.tracing .io:not(.intrace), .graph.tracing circle:not(.intrace), .graph.tracing g:not(.intrace),
+  .graph.tracing line:not(.intrace), .graph.tracing path:not(.intrace) { opacity: .12; transition: opacity .25s; }
+  .graph.tracing line.intrace, .graph.tracing path.intrace {
+    stroke: #3b82f6 !important; stroke-width: 2.5; opacity: 1; filter: drop-shadow(0 0 4px rgba(59,130,246,.9));
+  }
+  .graph.tracing line.cur-edge, .graph.tracing path.cur-edge {
+    stroke: #fbbf24 !important; stroke-width: 4; filter: drop-shadow(0 0 6px rgba(251,191,36,.95));
+  }
+  .graph.tracing .cur-node { filter: drop-shadow(0 0 6px rgba(251,191,36,.95)); }
   .openmenu button:hover:not(:disabled) { background: #2563eb; border-color: #3b82f6; }
   .openmenu button:disabled { opacity: .5; cursor: default; }
   .openmenu .om-hint { color: #64748b; font-size: 10px; margin-left: auto; }
