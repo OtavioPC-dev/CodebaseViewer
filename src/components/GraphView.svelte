@@ -236,6 +236,50 @@
   }
   // which single edge is currently "lit" by the flowing token
   const curEdge = $derived(trace && flowPos >= 0 ? trace.edges[flowPos] : null);
+  // ---- class-mode trace resolution ----
+  // In class mode functions are member ROWS inside file/class boxes, so the raw
+  // entity ids in trace.order must be mapped to the box (and member) that shows
+  // them, otherwise nothing lights up.
+  const traceClass = $derived.by(() => {
+    const boxes = new Set<string>();
+    const members = new Set<string>();
+    if (!trace || view.mode !== 'class') return { boxes, members };
+    const entToBox = new Map<string, string>();
+    for (const b of view.boxes as any[]) if (b.entity) entToBox.set(b.entity.id, b.id);
+    for (const id of trace.order as Set<string>) {
+      if (entToBox.has(id)) boxes.add(entToBox.get(id)!);
+      else if (view.memberIndex.has(id)) { const mi = view.memberIndex.get(id); members.add(id); boxes.add(mi.boxId); }
+      else boxes.add(id); // standalone or file/route id used directly
+    }
+    return { boxes, members };
+  });
+  // current-hop endpoints mapped to boxes + member rows (the animated "train")
+  const curClass = $derived.by(() => {
+    const boxes = new Set<string>();
+    const members = new Set<string>();
+    if (!curEdge || view.mode !== 'class') return { boxes, members };
+    const entToBox = new Map<string, string>();
+    for (const b of view.boxes as any[]) if (b.entity) entToBox.set(b.entity.id, b.id);
+    for (const id of curEdge.split('>')) {
+      if (entToBox.has(id)) boxes.add(entToBox.get(id)!);
+      else if (view.memberIndex.has(id)) { members.add(id); boxes.add(view.memberIndex.get(id).boxId); }
+      else boxes.add(id);
+    }
+    return { boxes, members };
+  });
+  function boxIntrace(id: string) { return traceClass.boxes.has(id); }
+  function boxCur(id: string) { return curClass.boxes.has(id); }
+  function memberIntrace(mid: string) { return traceClass.members.has(mid); }
+  function memberCur(mid: string) { return curClass.members.has(mid); }
+  // Resolve a raw node id to the element that actually has a rendered position:
+  // in class mode that's the box (box::<id>) or the member's box; in force mode
+  // it's the node id itself.
+  function posIdFor(id: string): string {
+    if (view.mode !== 'class') return id;
+    if (positions['box::' + id]) return 'box::' + id;
+    if (view.memberIndex.has(id)) return view.memberIndex.get(id).boxId;
+    return id;
+  }
   // an edge is part of the active trace trail
   function edgeActiveFn(e: any) {
     if (!trace) return false;
@@ -807,8 +851,8 @@
         {#each trace.bridges as bk}
           {@const bs = bk.split('>')[0]}
           {@const bt = bk.split('>')[1]}
-          {@const pa = positions[bs]}
-          {@const pb = positions[bt]}
+          {@const pa = positions[posIdFor(bs)]}
+          {@const pb = positions[posIdFor(bt)]}
           {#if pa && pb}
             <line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y}
                   class="bridge" class:cur-edge={curEdge === bk}
@@ -882,7 +926,7 @@
           {@const p = positions[b.id]}
           {#if p}
             <g class="uml {b.kind}" class:dim={hovered && !nodeActive(b.id)} class:hl={hovered === b.id}
-               class:intrace={trace && trace.order.has(b.id)} class:cur-node={curEdge && (curEdge.startsWith(b.id + '>') || curEdge.endsWith('>' + b.id))}
+               class:intrace={(trace && trace.order.has(b.id)) || boxIntrace(b.id)} class:cur-node={(curEdge && (curEdge.startsWith(b.id + '>') || curEdge.endsWith('>' + b.id))) || boxCur(b.id)}
                role="button" tabindex="0" style="cursor:grab{!present(b.entity.id) ? ';display:none' : ''}"
                onpointerdown={(ev) => onDown(ev, b.id)}
                onclick={(ev) => nodeClick(b.entity, ev)}
@@ -902,12 +946,13 @@
                 {@const ry = p.y - b.hh + HEADER + (i + 0.5) * ROWH}
                 {@const mid = view.memberIndex.get(m.id)?.boxId || m.id}
                 <rect x={p.x - b.hw} y={ry - ROWH / 2} width={b.w} height={ROWH}
-                      fill="transparent" style="cursor:pointer"
+                      fill={memberCur(m.id) ? 'rgba(251,191,36,.22)' : memberIntrace(m.id) ? 'rgba(59,130,246,.18)' : 'transparent'} style="cursor:pointer"
                       class:dim={hovered && hovered !== mid && !nodeActive(mid)}
+                      class:row-intrace={memberIntrace(m.id)} class:row-cur={memberCur(m.id)}
                       onclick={(ev) => { ev.stopPropagation(); nodeClick(m, ev); }}
                       oncontextmenu={(ev) => { ev.stopPropagation(); nodeRightClick(m, ev); }}
                       onmouseenter={() => (hovered = mid)} onmouseleave={() => (hovered = null)} />
-                <text x={p.x - b.hw + 12} y={ry + 3.5} font-size="11" fill="#cbd5e1" pointer-events="none">{m.label}</text>
+                <text x={p.x - b.hw + 12} y={ry + 3.5} font-size="11" fill={memberCur(m.id) ? '#fbbf24' : memberIntrace(m.id) ? '#bfdbfe' : '#cbd5e1'} pointer-events="none">{m.label}</text>
                 <circle cx={p.x - b.hw} cy={ry} r="3" fill="#0b1020" stroke={b.kind === 'class' ? '#fbbf24' : '#60a5fa'} stroke-width="1.5" pointer-events="none" />
                 <circle cx={p.x + b.hw} cy={ry} r="3" fill="#0b1020" stroke={b.kind === 'class' ? '#fbbf24' : '#60a5fa'} stroke-width="1.5" pointer-events="none" />
               {/each}
