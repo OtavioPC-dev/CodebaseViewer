@@ -1112,9 +1112,12 @@
   .iod-step-label { flex: 1; color: #cbd5e1; }
   .iod-step-kind { color: #64748b; font-size: 10px; }
   .iod-outs { display: flex; flex-direction: column; gap: 6px; }
-  /* data-flow trace: dim everything not on the trace path */
-  .graph.tracing .io.intrace, .graph.tracing circle.intrace, .graph.tracing g.intrace { opacity: 1; }
-  .graph.tracing .io:not(.intrace), .graph.tracing circle:not(.intrace), .graph.tracing g:not(.intrace),
+  /* data-flow trace: dim everything not on the trace path.
+     IMPORTANT: do NOT dim generic <g> wrappers — that would multiply opacity
+     onto the bright path inside them and make it invisible. Only dim leaf
+     node/edge elements, plus non-traced class boxes explicitly. */
+  .graph.tracing .io.intrace, .graph.tracing circle.intrace, .graph.tracing .uml.intrace, .graph.tracing g.intrace { opacity: 1; }
+  .graph.tracing .io:not(.intrace), .graph.tracing circle:not(.intrace), .graph.tracing .uml:not(.intrace),
   .graph.tracing line:not(.intrace), .graph.tracing path:not(.intrace) { opacity: .12; transition: opacity .25s; }
   .graph.tracing line.intrace, .graph.tracing path.intrace {
     stroke: #3b82f6 !important; stroke-width: 2.5; opacity: 1; filter: drop-shadow(0 0 4px rgba(59,130,246,.9));
