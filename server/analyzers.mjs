@@ -194,10 +194,37 @@ function classifyCall(full, arg0) {
   return null;
 }
 
-function emitBoundary(file, ownerId, full, arg0, nodes, edges, lang, line) {
+// True when a call/new expression's return value is used by surrounding code
+// (argument, assignment, return, await-then-used, member/chain, condition, etc.).
+// False only when the call stands alone as a discarded statement — a real output.
+function resultIsConsumed(node) {
+  let cur = node;
+  let parent = cur.parent;
+  // Unwrap await/parenthesized wrappers: the *wrapper's* usage is what matters.
+  while (parent && (parent.type === 'await_expression' || parent.type === 'parenthesized_expression')) {
+    cur = parent;
+    parent = cur.parent;
+  }
+  if (!parent) return false;
+  // Terminal (NOT consumed): the value leaves this function's boundary or is
+  // discarded — a bare statement, or `return`/`yield` handing it to the caller
+  // (e.g. `return new Response(...)` is a real HTTP output surface).
+  if (parent.type === 'expression_statement' || parent.type === 'return_statement'
+      || parent.type === 'yield' || parent.type === 'yield_expression') return false;
+  // Everything else means the result is consumed internally (argument to another
+  // call, assignment, condition, member/chain, etc.) — an intermediate transform.
+  return true;
+}
+
+function emitBoundary(file, ownerId, full, arg0, nodes, edges, lang, line, callNode) {
   const raw = (lang === 'cpp' || lang === 'c') ? classifyCppCall(full, arg0) : classifyCall(full, arg0);
   const c = raw ? decorate(raw, arg0) : null;
   if (!c) return;
+  // An OUT boundary whose return value is consumed internally (passed as an
+  // argument, assigned, returned, chained, etc.) is an intermediate transform,
+  // not a terminal output — e.g. JSON.stringify(x) fed into writeFileSync.
+  // Only emit it as an output when its result is discarded (a bare statement).
+  if (c.dir === 'out' && callNode && resultIsConsumed(callNode)) return;
   const kind = c.dir === 'in' ? 'io-input' : 'io-output';
   // Aggregate-by-type surfaces: one node per owner+type, ignoring message text.
   const AGG = new Set(['error', 'log', 'response', 'json', 'console', 'browser']);
@@ -285,7 +312,7 @@ function analyzeJS(src, lang, file, defs, edges, nodes) {
         const name = full.split('(')[0].split('.').pop().split('[')[0];
         if (name && /^[A-Za-z_]\w*$/.test(name)) edges.push({ source: defId || file, target: name, kind: 'calls', raw: full });
         const args = node.childForFieldName('arguments');
-        emitBoundary(file, defId || file, full, args?.namedChildren?.[0]?.text, nodes, edges, lang, node.startPosition.row + 1);
+        emitBoundary(file, defId || file, full, args?.namedChildren?.[0]?.text, nodes, edges, lang, node.startPosition.row + 1, node);
       }
     } else if (node.type === 'new_expression') {
       const callee = node.childForFieldName('constructor');
@@ -293,7 +320,7 @@ function analyzeJS(src, lang, file, defs, edges, nodes) {
         const name = callee.text.split('(')[0].split('.').pop();
         if (name && /^[A-Za-z_]\w*$/.test(name)) edges.push({ source: defId || file, target: name, kind: 'calls', raw: callee.text });
         const args = node.childForFieldName('arguments');
-        emitBoundary(file, defId || file, callee.text, args?.namedChildren?.[0]?.text, nodes, edges, lang, node.startPosition.row + 1);
+        emitBoundary(file, defId || file, callee.text, args?.namedChildren?.[0]?.text, nodes, edges, lang, node.startPosition.row + 1, node);
       }
     }
     for (let i = 0; i < node.childCount; i++) visit(node.child(i), scopeStack);
@@ -331,7 +358,7 @@ function analyzePY(src, file, defs, edges, nodes) {
       if (fn) {
         const name = fn.text.split('(')[0].split('.').pop().split('[')[0];
         if (name && /^[A-Za-z_]\w*$/.test(name)) edges.push({ source: defId || file, target: name, kind: 'calls', raw: fn.text });
-        emitBoundary(file, defId || file, fn.text, node.childForFieldName('arguments')?.namedChildren?.[0]?.text, nodes, edges, 'py', node.startPosition.row + 1);
+        emitBoundary(file, defId || file, fn.text, node.childForFieldName('arguments')?.namedChildren?.[0]?.text, nodes, edges, 'py', node.startPosition.row + 1, node);
       }
     }
     for (let i = 0; i < node.childCount; i++) visit(node.child(i), scopeStack);
@@ -396,7 +423,7 @@ function analyzeCPP(src, lang, file, defs, edges, nodes) {
         const full = callee.text;
         const name = full.split('(')[0].split('::').pop().split('.').pop().split('[')[0];
         if (name && /^[A-Za-z_]\w*$/.test(name)) edges.push({ source: defId || file, target: name, kind: 'calls', raw: full });
-        emitBoundary(file, defId || file, full, node.childForFieldName('arguments')?.namedChildren?.[0]?.text, nodes, edges, lang, node.startPosition.row + 1);
+        emitBoundary(file, defId || file, full, node.childForFieldName('arguments')?.namedChildren?.[0]?.text, nodes, edges, lang, node.startPosition.row + 1, node);
       }
     } else if (node.type === 'new_expression') {
       const callee = node.childForFieldName('type');
