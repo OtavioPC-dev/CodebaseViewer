@@ -151,10 +151,34 @@
   // Walk the data flow: from the IO owner, follow ALL `calls` edges (file-scoped),
   // and collect every reachable function plus the outputs they own. Stop at a
   // depth limit (FLOW_CAP) or when a branch hits an output-owning node.
-  function buildPaths(owner: string): { edges: string[]; outputs: any[] } {
+  // Cross-file hop: when the triggering input is a network request (fetch/…),
+  // bridge to the API route file it targets so the route's outputs are reached.
+  function routeFileForRequest(ioNode: any): string | null {
+    if (!ioNode || ioNode.surface !== 'network') return null;
+    const raw = String(ioNode.payload || ioNode.label || '');
+    const m = raw.match(/\/api\/[\w\-/]+/);
+    if (!m) return null;
+    const path = m[0].replace(/\/+$/, '');            // e.g. /api/pick-folder
+    // Match a route file node whose id contains that path (…/pages/api/pick-folder.ts)
+    const hit = liveGraph.nodes.find(
+      (n: any) => n.kind === 'file' && n.id.replace(/\\/g, '/').includes('pages' + path + '.')
+    );
+    return hit ? hit.id : null;
+  }
+  function buildPaths(owner: string, ioNode?: any): { edges: string[]; outputs: any[]; bridges: string[] } {
     const edges: string[] = [];
+    const bridges: string[] = [];
     const visited = new Set<string>([owner]);
     const queue: string[] = [owner];
+    // Seed a cross-file network hop if this input targets an API route.
+    const routeFile = ioNode ? routeFileForRequest(ioNode) : null;
+    if (routeFile && !visited.has(routeFile)) {
+      visited.add(routeFile);
+      const bridge = owner + '>' + routeFile;
+      edges.push(bridge);
+      bridges.push(bridge);
+      queue.push(routeFile);
+    }
     let depth = 0;
     while (queue.length && depth < FLOW_CAP) {
       const cur = queue.shift()!;
@@ -171,15 +195,15 @@
     const outputs = liveGraph.nodes
       .filter((n: any) => n.kind === 'io-output' && visited.has(n.owner))
       .map((o: any) => ({ label: o.label, file: o.file, line: o.line, surface: o.surface, owner: o.owner }));
-    return { edges, outputs };
+    return { edges, outputs, bridges };
   }
   function runTrace(ioNode: any) {
     const owner = ioNode.owner || ioNode.id;
-    const { edges, outputs } = buildPaths(owner);
+    const { edges, outputs, bridges } = buildPaths(owner, ioNode);
     const intrace = new Set<string>();
     intrace.add(owner);
     edges.forEach((k) => { const [s] = k.split('>'); intrace.add(s); intrace.add(k.split('>')[1]); });
-    trace = { input: { id: ioNode.id, label: ioNode.label }, order: intrace, edges, outputs, owner, mode: flowMode };
+    trace = { input: { id: ioNode.id, label: ioNode.label }, order: intrace, edges, outputs, owner, mode: flowMode, bridges };
     flowPos = -1;
     flowPaused = false;
     startFlow();
@@ -773,7 +797,25 @@
 
   <svg bind:this={svgEl} class="graph" class:tracing={!!trace} viewBox="0 0 {vw} {vh}" preserveAspectRatio="xMidYMid meet"
        onpointermove={onMove} onpointerup={onUp} onpointerleave={onUp} onclick={() => { if (trace) clearTrace(); }}>
+    <defs>
+      <marker id="bridgehead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#f472b6" />
+      </marker>
+    </defs>
     <g transform={transformStr}>
+      {#if trace && trace.bridges}
+        {#each trace.bridges as bk}
+          {@const bs = bk.split('>')[0]}
+          {@const bt = bk.split('>')[1]}
+          {@const pa = positions[bs]}
+          {@const pb = positions[bt]}
+          {#if pa && pb}
+            <line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y}
+                  class="bridge" class:cur-edge={curEdge === bk}
+                  stroke-dasharray="6,5" marker-end="url(#bridgehead)" />
+          {/if}
+        {/each}
+      {/if}
       {#if view.mode === 'force'}
         {#each view.renderEdges as e}
           {@const g = forceEdge(e)}
@@ -965,11 +1007,13 @@
             {#each trace.edges as k, i}
               {@const src = k.split('>')[0]}
               {@const tgt = k.split('>')[1]}
-              <li class:on={i <= flowPos} class:cur={i === flowPos} class:done={i < flowPos}>
+              {@const isBridge = trace.bridges && trace.bridges.includes(k)}
+              <li class:on={i <= flowPos} class:cur={i === flowPos} class:done={i < flowPos} class:bridge-step={isBridge}>
                 <span class="iod-step-n">{i + 1}</span>
                 <span class="iod-step-from">{nodeLabelById(src)}</span>
-                <span class="iod-step-arrow">→</span>
+                <span class="iod-step-arrow">{isBridge ? '⇢' : '→'}</span>
                 <span class="iod-step-to">{nodeLabelById(tgt)}</span>
+                {#if isBridge}<span class="iod-step-badge">network</span>{/if}
               </li>
             {/each}
           </ol>
@@ -1111,6 +1155,8 @@
   .iod-step-to { color: #93c5fd; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .iod-step-label { flex: 1; color: #cbd5e1; }
   .iod-step-kind { color: #64748b; font-size: 10px; }
+  .iod-steps li.bridge-step { border-left: 2px solid #f472b6; }
+  .iod-step-badge { font-size: 9px; color: #f472b6; background: #3b0a28; border-radius: 4px; padding: 1px 5px; flex-shrink: 0; }
   .iod-outs { display: flex; flex-direction: column; gap: 6px; }
   /* data-flow trace: dim everything not on the trace path.
      IMPORTANT: do NOT dim generic <g> wrappers — that would multiply opacity
@@ -1126,6 +1172,9 @@
     stroke: #fbbf24 !important; stroke-width: 4; filter: drop-shadow(0 0 6px rgba(251,191,36,.95));
   }
   .graph.tracing .cur-node { filter: drop-shadow(0 0 6px rgba(251,191,36,.95)); }
+  /* virtual cross-file hop (e.g. fetch → API route file) */
+  .bridge { stroke: #f472b6; stroke-width: 2.5; opacity: 1; filter: drop-shadow(0 0 5px rgba(244,114,182,.8)); }
+  .bridge.cur-edge { stroke: #fbbf24; stroke-width: 4; filter: drop-shadow(0 0 6px rgba(251,191,36,.95)); }
   .openmenu button:hover:not(:disabled) { background: #2563eb; border-color: #3b82f6; }
   .openmenu button:disabled { opacity: .5; cursor: default; }
   .openmenu .om-hint { color: #64748b; font-size: 10px; margin-left: auto; }
