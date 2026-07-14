@@ -90,6 +90,13 @@
   let selected: any = $state(null);
   let hovered: string | null = $state(null);
   let mode: 'force' | 'class' = $state('force');
+  // stress / debug mode: periodically spawn random nodes wired to random
+  // existing nodes so the live force sim is exercised at growing scale.
+  let stress: boolean = $state(false);
+  let stressRate: number = $state(40);   // nodes per second
+  let stressCount: number = $state(0);
+  let stressTimer: any = null;
+  let stressSeq = 0;
 
   // ---- native "open in host" bridge ----
   const repoRoot: string = liveGraph?.meta?.repo || process.cwd?.() || '';
@@ -514,10 +521,17 @@
 
     if (v.mode === 'force') {
       // LIVE simulation — drag reheats, links reflow.
+      // distanceMax caps how far charge repulsion reaches. Without it forceManyBody
+      // repels every pair (all-pairs); with it, each node only repels neighbours
+      // within the radius — the key scale lever for large graphs. Small graphs
+      // stay uncapped (full reach = nicer layout); large graphs get a bounded radius.
+      const nCount = simNodes.length;
+      const charge = d3.forceManyBody().strength(-rf)
+        .distanceMax(nCount <= 120 ? Infinity : Math.max(ld * 12, 320));
       sim = d3.forceSimulation(simNodes)
         .force('x', d3.forceX(cx).strength(cf))
         .force('y', d3.forceY(cy).strength(cf))
-        .force('charge', d3.forceManyBody().strength(-rf))
+        .force('charge', charge)
         .force('link', d3.forceLink(simLinks).id((d: any) => d.id).distance(ld).strength(lf))
         .force('collide', d3.forceCollide().radius((d: any) => d._r).iterations(2))
         .on('tick', () => {
@@ -788,10 +802,49 @@
   onDestroy(() => {
     if (es) { es.close(); es = null; }
     if (sim) { sim.on('tick', null); sim.stop(); }
+    if (stressTimer) clearInterval(stressTimer);
     if (zoomCtl && svgEl) d3.select(svgEl).on('.zoom', null);
   });
   function zoomBy(f: number) { if (svgEl && zoomCtl) d3.select(svgEl).transition().duration(200).call(zoomCtl.scaleBy, f); }
   function resetZoom() { if (svgEl && zoomCtl) { d3.select(svgEl).transition().duration(200).call(zoomCtl.transform, d3.zoomIdentity); transformStr = 'translate(0,0) scale(1)'; zoomT = { x: 0, y: 0, k: 1 }; } }
+  function stopStress() {
+    if (stressTimer) clearInterval(stressTimer);
+    stressTimer = null;
+    stress = false;
+  }
+  function startStress() {
+    stopStress();
+    stress = true;
+    stressTimer = setInterval(() => {
+      const g = liveGraph;
+      if (!g || !g.nodes) return;
+      const types = ['file', 'function', 'class', 'method', 'external'];
+      // edge density scales with size (more targets to wire to) but stays bounded
+      const k = Math.max(1, Math.min(4, Math.round(g.nodes.length / 200) + 1));
+      const next = { ...g, nodes: g.nodes.slice(), edges: g.edges.slice() };
+      const targets: string[] = [];
+      for (let i = 0; i < k; i++) {
+        const id = `stress-${stressSeq++}`;
+        const kind = types[(Math.random() * types.length) | 0];
+        next.nodes.push({
+          id, kind,
+          label: `${kind}#${stressSeq}`,
+          file: '/stress', line: 1, col: 1,
+          x: Math.random() * 800, y: Math.random() * 600,
+        });
+        targets.push(id);
+      }
+      // wire each new node to a random existing node (fallback: a sibling)
+      for (const id of targets) {
+        const pool = next.nodes.filter((n: any) => n.id !== id && !n.id.startsWith('stress-'));
+        const t = pool.length ? pool[(Math.random() * pool.length) | 0] : targets[(Math.random() * targets.length) | 0];
+        next.edges.push({ source: id, target: t.id, kind: 'calls' });
+      }
+      liveGraph = next;
+      stressCount = stressSeq;
+      if (sim) sim.alpha(Math.max(sim.alpha(), 0.3)).restart();
+    }, Math.max(50, 1000 / stressRate));
+  }
   function reheat() { if (sim) sim.alpha(0.9).restart(); }
 </script>
 
@@ -841,6 +894,11 @@
       <button type="button" onclick={resetZoom}>reset</button>
       {#if mode === 'force'}<button type="button" onclick={reheat}>reheat</button>{/if}
       {#if mode !== 'force'}<button type="button" onclick={arrangeDataflow}>⇥ arrange L→R</button>{/if}
+      <span class="stress" class:on={stress}>
+        <button type="button" onclick={stress ? stopStress : startStress}>{stress ? '⏹ stress' : '▶ stress'}</button>
+        <label>rate<input type="range" min="5" max="500" step="5" bind:value={stressRate} /><b>{stressRate}/s</b></label>
+        {#if stress}<b class="stressc">{stressCount} nodes</b>{/if}
+      </span>
     </span>
   </div>
 
@@ -1158,6 +1216,14 @@
   .mode button.on { background: #2563eb; color: #fff; border-color: #3b82f6; }
   .zoom { display: inline-flex; gap: 4px; }
   .zoom button { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px; padding: 0 8px; height: 22px; cursor: pointer; font: 13px system-ui; }
+  .stress { display: inline-flex; gap: 6px; align-items: center; background: rgba(127,29,29,.35); padding: 2px 6px; border-radius: 6px; border: 1px solid #7f1d1d; }
+  .stress.on { background: rgba(153,27,27,.45); border-color: #ef4444; }
+  .stress button { background: #7f1d1d; color: #fecaca; border: 1px solid #b91c1c; border-radius: 4px; padding: 0 8px; height: 22px; cursor: pointer; font: 12px system-ui; }
+  .stress.on button { background: #b91c1c; color: #fff; }
+  .stress label { display: inline-flex; align-items: center; gap: 4px; color: #fca5a5; }
+  .stress input[type=range] { width: 70px; }
+  .stress b { color: #fecaca; min-width: 30px; font-variant-numeric: tabular-nums; }
+  .stressc { color: #fda4af !important; }
   .inspect {
     position: absolute; bottom: 8px; left: 8px; z-index: 2;
     background: rgba(15,23,42,.9); padding: 8px 12px; border-radius: 8px;
